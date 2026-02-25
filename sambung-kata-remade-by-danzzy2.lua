@@ -1,5 +1,5 @@
 -- =========================================================
--- ULTRA SMART AUTO KATA (ANTI LUAOBFUSCATOR V3 - SMART AVOIDANCE)
+-- ULTRA SMART AUTO KATA (FIX FORCE START + DEBUG)
 -- =========================================================
 
 if game:IsLoaded() == false then
@@ -7,29 +7,47 @@ if game:IsLoaded() == false then
 end
 
 -- =========================
+-- DEBUG PRINT (BUAT LIAT ERROR)
+-- =========================
+local function debugPrint(...)
+    local args = {...}
+    local msg = "[DEBUG] " .. table.concat(args, " ")
+    print(msg)
+    -- Kalo ada notifikasi, kirim juga
+    if Rayfield and Rayfield:Notify then
+        pcall(function()
+            Rayfield:Notify({Title = "Debug", Content = msg, Duration = 3})
+        end)
+    end
+end
+
+debugPrint("Script dimulai...")
+
+-- =========================
 -- SAFE RAYFIELD LOAD
 -- =========================
 local httpget = game.HttpGet
 local loadstr = loadstring
 
+debugPrint("Loading Rayfield...")
 local RayfieldSource = httpget(game, "https://sirius.menu/rayfield")
 if RayfieldSource == nil then
-    warn("Gagal ambil Rayfield source")
+    debugPrint("GAGAL: Rayfield source nil")
     return
 end
 
 local RayfieldFunction = loadstr(RayfieldSource)
 if RayfieldFunction == nil then
-    warn("Gagal compile Rayfield")
+    debugPrint("GAGAL: Rayfield function nil")
     return
 end
 
 local Rayfield = RayfieldFunction()
 if Rayfield == nil then
-    warn("Rayfield return nil")
+    debugPrint("GAGAL: Rayfield return nil")
     return
 end
-print("Rayfield type:", typeof(Rayfield))
+debugPrint("Rayfield loaded:", typeof(Rayfield))
 
 -- =========================
 -- SERVICES
@@ -39,20 +57,25 @@ local ReplicatedStorage = GetService(game, "ReplicatedStorage")
 local Players = GetService(game, "Players")
 local LocalPlayer = Players.LocalPlayer
 
+debugPrint("Services loaded")
+
 -- =========================
--- LOAD WORDLIST + ANTI DOUBLE
+-- LOAD WORDLIST
 -- =========================
 local kataModule = {}
 local kataSet = {}
 
 local function downloadWordlist()
+    debugPrint("Downloading wordlist...")
     local response = httpget(game, "https://raw.githubusercontent.com/danzzy1we/roblox-script-dump/refs/heads/main/WordListDump/withallcombination2.lua")
     if not response then
+        debugPrint("GAGAL: Wordlist download failed")
         return false
     end
 
     local content = string.match(response, "return%s*(.+)")
     if not content then
+        debugPrint("GAGAL: No 'return' found in wordlist")
         return false
     end
 
@@ -76,7 +99,7 @@ local function downloadWordlist()
         end
     end
 
-    print(string.format("Wordlist loaded: %d total, %d unique, %d duplicates removed", 
+    debugPrint(string.format("Wordlist: %d total, %d unique, %d duplicates", 
         totalProcessed, #kataModule, duplicateCount))
 
     return true
@@ -84,11 +107,11 @@ end
 
 local wordOk = downloadWordlist()
 if not wordOk or #kataModule == 0 then
-    warn("Wordlist gagal dimuat!")
+    debugPrint("GAGAL: Wordlist empty or failed")
     return
 end
 
-print("Wordlist Loaded (Unique):", #kataModule)
+debugPrint("Wordlist loaded OK:", #kataModule)
 
 -- =========================
 -- REMOTES
@@ -102,117 +125,78 @@ local BillboardEnd = remotes:WaitForChild("BillboardEnd")
 local TypeSound = remotes:WaitForChild("TypeSound")
 local UsedWordWarn = remotes:WaitForChild("UsedWordWarn")
 
+debugPrint("Remotes loaded")
+
 -- =========================
--- STATE (DITINGKATKAN)
+-- STATE
 -- =========================
 local matchActive = false
 local isMyTurn = false
 local serverLetter = ""
 
--- TRACKING KATA YANG SUDAH DIPAKAI (SIAPA PUN)
-local globalUsedWords = {}      -- Semua kata yang pernah muncul
-local globalUsedSet = {}        -- Set buat cepet
-
--- KATA YANG DIPAKAI DI MATCH INI
-local matchUsedWords = {}
-local matchUsedSet = {}
-local matchUsedList = {}
-
+local usedWords = {}
+local usedWordsSet = {}
+local usedWordsList = {}
 local opponentStreamWord = ""
-local lastOpponentWord = ""
 
 local autoEnabled = false
 local autoRunning = false
-local avoidanceMode = "smart" -- "smart", "strict", "normal"
 
 local config = {
     minDelay = 350,
     maxDelay = 650,
     aggression = 20,
     minLength = 2,
-    maxLength = 12,
-    avoidUsed = true,        -- Hindari kata yang sudah dipake siapapun
-    avoidOpponent = true,     -- Hindari kata yang sedang diketik lawan
-    smartRetry = true         -- Cari alternatif kalo kata udah dipake
+    maxLength = 12
 }
 
 -- =========================
--- FUNGSI TRACKING KATA
+-- FUNGSI LOGIC (DENGAN DEBUG)
 -- =========================
-local function addGlobalWord(word)
-    local w = string.lower(word)
-    if globalUsedSet[w] == nil then
-        globalUsedSet[w] = true
-        globalUsedWords[w] = true
-        table.insert(matchUsedList, word) -- Buat display
-    end
+local function isUsed(word)
+    return usedWordsSet[string.lower(word)] == true
 end
 
-local function addMatchWord(word)
+local usedWordsDropdown = nil
+
+local function addUsedWord(word)
     local w = string.lower(word)
-    if matchUsedSet[w] == nil then
-        matchUsedSet[w] = true
-        matchUsedWords[w] = true
-        table.insert(matchUsedList, word)
-        
-        -- Update dropdown
+    if usedWordsSet[w] == nil then
+        usedWordsSet[w] = true
+        usedWords[w] = true
+        table.insert(usedWordsList, word)
+        debugPrint("Added used word:", word)
         if usedWordsDropdown ~= nil then
-            usedWordsDropdown:Set(matchUsedList)
+            pcall(function()
+                usedWordsDropdown:Set(usedWordsList)
+            end)
         end
     end
-    -- Tetep masukin ke global
-    addGlobalWord(word)
 end
 
-local function isWordUsed(word)
-    if not config.avoidUsed then return false end
-    return matchUsedSet[string.lower(word)] == true
-end
-
-local function isWordBeingTyped(word)
-    if not config.avoidOpponent then return false end
-    if opponentStreamWord == "" then return false end
-    return string.lower(word) == string.lower(opponentStreamWord)
-end
-
-local function resetMatchWords()
-    matchUsedWords = {}
-    matchUsedSet = {}
-    matchUsedList = {}
-    opponentStreamWord = ""
-    lastOpponentWord = ""
+local function resetUsedWords()
+    usedWords = {}
+    usedWordsSet = {}
+    usedWordsList = {}
+    debugPrint("Reset used words")
     if usedWordsDropdown ~= nil then
-        usedWordsDropdown:Set({})
+        pcall(function()
+            usedWordsDropdown:Set({})
+        end)
     end
 end
 
--- =========================
--- FUNGSI GET SMART WORDS (DENGAN AVOIDANCE)
--- =========================
 local function getSmartWords(prefix)
+    debugPrint("Getting words for prefix:", prefix)
     local results = {}
     local lowerPrefix = string.lower(prefix)
 
     for i = 1, #kataModule do
         local word = kataModule[i]
         if string.sub(word, 1, #lowerPrefix) == lowerPrefix then
-            local len = string.len(word)
-            if len >= config.minLength and len <= config.maxLength then
-                
-                -- CEK APAKAH KATA INI AMAN DIGUNAKAN
-                local isSafe = true
-                
-                -- Cek apakah sudah dipakai
-                if config.avoidUsed and isWordUsed(word) then
-                    isSafe = false
-                end
-                
-                -- Cek apakah sedang diketik lawan
-                if config.avoidOpponent and isWordBeingTyped(word) then
-                    isSafe = false
-                end
-                
-                if isSafe then
+            if not isUsed(word) then
+                local len = string.len(word)
+                if len >= config.minLength and len <= config.maxLength then
                     table.insert(results, word)
                 end
             end
@@ -223,108 +207,165 @@ local function getSmartWords(prefix)
         return string.len(a) > string.len(b)
     end)
 
+    debugPrint("Found", #results, "words for", prefix)
     return results
 end
 
+local function humanDelay()
+    local min = config.minDelay
+    local max = config.maxDelay
+    if min > max then min = max end
+    local delay = math.random(min, max) / 1000
+    task.wait(delay)
+end
+
 -- =========================
--- AUTO ENGINE (DENGAN SMART RETRY)
+-- AUTO ENGINE (FORCE START + DEBUG)
 -- =========================
 local function startUltraAI()
-    if autoRunning then return end
-    if not autoEnabled then return end
-    if not matchActive then return end
-    if not isMyTurn then return end
-    if serverLetter == "" then return end
+    debugPrint("=== START ULTRA AI ===")
+    debugPrint("autoRunning:", autoRunning)
+    debugPrint("autoEnabled:", autoEnabled)
+    debugPrint("matchActive:", matchActive)
+    debugPrint("isMyTurn:", isMyTurn)
+    debugPrint("serverLetter:", serverLetter)
 
-    autoRunning = true
-
-    humanDelay()
-
-    -- AMBIL KATA YANG TERSEDIA (SUDAH DI-FILTER)
-    local words = getSmartWords(serverLetter)
-    
-    -- KALO GA ADA KATA, COBA RELAX FILTER
-    if #words == 0 and config.smartRetry then
-        -- Relax filter: izinin kata yang udah dipake tapi belum pernah menang
-        words = getSmartWords(serverLetter) -- Panggil ulang dengan filter longgar
+    if autoRunning then 
+        debugPrint("EXIT: Already running")
+        return 
     end
     
+    if not autoEnabled then 
+        debugPrint("EXIT: Auto not enabled")
+        return 
+    end
+    
+    if not matchActive then 
+        debugPrint("EXIT: Match not active")
+        return 
+    end
+    
+    if not isMyTurn then 
+        debugPrint("EXIT: Not my turn")
+        return 
+    end
+    
+    if serverLetter == "" then 
+        debugPrint("EXIT: Server letter empty")
+        return 
+    end
+
+    autoRunning = true
+    debugPrint("Auto running set to TRUE")
+
+    -- FORCE DELAY
+    humanDelay()
+
+    -- GET WORDS
+    local words = getSmartWords(serverLetter)
+    debugPrint("Words available:", #words)
+    
     if #words == 0 then
+        debugPrint("EXIT: No words available")
         autoRunning = false
         return
     end
 
-    -- PILIH KATA BERDASARKAN AGGRESSION
+    -- SELECT WORD
     local selectedWord = words[1]
+    debugPrint("Selected word (initial):", selectedWord)
 
     if config.aggression < 100 then
         local topN = math.floor(#words * (1 - config.aggression/100))
         if topN < 1 then topN = 1 end
         if topN > #words then topN = #words end
         selectedWord = words[math.random(1, topN)]
+        debugPrint("Selected word (after aggression):", selectedWord)
     end
 
-    -- KETIK HURUF PER HURUF
+    -- TYPE LETTER BY LETTER
     local currentWord = serverLetter
     local remain = string.sub(selectedWord, #serverLetter + 1)
+    debugPrint("Remaining letters:", remain)
 
     for i = 1, string.len(remain) do
+        debugPrint("Typing letter", i, "of", string.len(remain))
+
         if not matchActive or not isMyTurn then
+            debugPrint("STOP: Match state changed")
             autoRunning = false
             return
         end
 
         currentWord = currentWord .. string.sub(remain, i, i)
+        debugPrint("Current word:", currentWord)
 
-        TypeSound:FireServer()
-        BillboardUpdate:FireServer(currentWord)
+        -- FIRE REMOTES
+        pcall(function()
+            TypeSound:FireServer()
+            BillboardUpdate:FireServer(currentWord)
+            debugPrint("Fired TypeSound and BillboardUpdate")
+        end)
 
         humanDelay()
     end
 
+    -- SUBMIT
+    debugPrint("Submitting word:", selectedWord)
     humanDelay()
 
-    -- SUBMIT KATA
-    SubmitWord:FireServer(selectedWord)
-    addMatchWord(selectedWord)
+    pcall(function()
+        SubmitWord:FireServer(selectedWord)
+        debugPrint("Submitted")
+    end)
+
+    addUsedWord(selectedWord)
 
     humanDelay()
-    BillboardEnd:FireServer()
+
+    pcall(function()
+        BillboardEnd:FireServer()
+        debugPrint("BillboardEnd fired")
+    end)
 
     autoRunning = false
+    debugPrint("=== AUTO AI FINISHED ===")
 end
 
 -- =========================
--- FUNGSI LAINNYA (SAMA)
+-- FORCE START FUNCTION (UNTUK TEST)
 -- =========================
-local function humanDelay()
-    local min = config.minDelay
-    local max = config.maxDelay
-    if min > max then min = max end
-    task.wait(math.random(min, max) / 1000)
+local function forceStartAI()
+    debugPrint("FORCE STARTING AI...")
+    -- Set state buat test
+    matchActive = true
+    isMyTurn = true
+    serverLetter = "a" -- GANTI INI SESUAI HURUF YANG ADA
+    
+    startUltraAI()
 end
 
 -- =========================
 -- UI
 -- =========================
 local Window = Rayfield:CreateWindow({
-    Name = "Sambung-kata (Smart Avoidance)",
+    Name = "Sambung-kata (FIXED)",
     LoadingTitle = "Loading Gui...",
-    LoadingSubtitle = "automate by sazaraaax",
+    LoadingSubtitle = "by sazaraaax",
     ConfigurationSaving = {Enabled = false}
 })
 
 local MainTab = Window:CreateTab("Main")
 
--- Info Wordlist
-local wordlistInfo = string.format("Wordlist: %d kata unik", #kataModule)
-MainTab:CreateParagraph({Title = "📚 Wordlist Info", Content = wordlistInfo})
+-- Wordlist info
+MainTab:CreateParagraph({Title = "Wordlist", Content = tostring(#kataModule) .. " kata"})
 
 -- Toggle Auto
 MainTab:CreateToggle({
     Name = "Aktifkan Auto",
     CurrentValue = false,
     Callback = function(Value)
+        debugPrint("Auto toggled:", Value)
         autoEnabled = Value
         if Value then
             startUltraAI()
@@ -332,40 +373,22 @@ MainTab:CreateToggle({
     end
 })
 
--- AVOIDANCE SETTINGS
-MainTab:CreateToggle({
-    Name = "Hindari Kata Terpakai",
-    CurrentValue = config.avoidUsed,
-    Callback = function(Value)
-        config.avoidUsed = Value
+-- FORCE START BUTTON (UNTUK TEST)
+MainTab:CreateButton({
+    Name = "FORCE START AI (TEST)",
+    Callback = function()
+        debugPrint("Force start button pressed")
+        forceStartAI()
     end
 })
 
-MainTab:CreateToggle({
-    Name = "Hindari Kata Lawan",
-    CurrentValue = config.avoidOpponent,
-    Callback = function(Value)
-        config.avoidOpponent = Value
-    end
-})
-
-MainTab:CreateToggle({
-    Name = "Smart Retry",
-    CurrentValue = config.smartRetry,
-    Callback = function(Value)
-        config.smartRetry = Value
-    end
-})
-
--- Sliders
+-- Sliders (sama seperti sebelumnya)
 MainTab:CreateSlider({
     Name = "Aggression",
     Range = {0,100},
     Increment = 5,
     CurrentValue = config.aggression,
-    Callback = function(Value)
-        config.aggression = Value
-    end
+    Callback = function(Value) config.aggression = Value end
 })
 
 MainTab:CreateSlider({
@@ -373,9 +396,7 @@ MainTab:CreateSlider({
     Range = {10, 500},
     Increment = 5,
     CurrentValue = config.minDelay,
-    Callback = function(Value)
-        config.minDelay = Value
-    end
+    Callback = function(Value) config.minDelay = Value end
 })
 
 MainTab:CreateSlider({
@@ -383,180 +404,93 @@ MainTab:CreateSlider({
     Range = {100, 1000},
     Increment = 5,
     CurrentValue = config.maxDelay,
-    Callback = function(Value)
-        config.maxDelay = Value
-    end
+    Callback = function(Value) config.maxDelay = Value end
 })
 
-MainTab:CreateSlider({
-    Name = "Min Word Length",
-    Range = {1, 2},
-    Increment = 1,
-    CurrentValue = config.minLength,
-    Callback = function(Value)
-        config.minLength = Value
-    end
-})
+-- Status Paragraphs
+local statusMatch = MainTab:CreateParagraph({Title = "Match Status", Content = "Unknown"})
+local statusTurn = MainTab:CreateParagraph({Title = "Turn Status", Content = "Unknown"})
+local statusLetter = MainTab:CreateParagraph({Title = "Start Letter", Content = "-"})
+local statusWords = MainTab:CreateParagraph({Title = "Available Words", Content = "0"})
 
-MainTab:CreateSlider({
-    Name = "Max Word Length",
-    Range = {5, 20},
-    Increment = 1,
-    CurrentValue = config.maxLength,
-    Callback = function(Value)
-        config.maxLength = Value
-    end
-})
-
--- Dropdown Used Words
-usedWordsDropdown = MainTab:CreateDropdown({
-    Name = "Kata Terpakai (Match ini)",
-    Options = matchUsedList,
-    CurrentOption = "",
-    Callback = function() end
-})
-
--- ==============================
--- PARAGRAPH OBJECTS
--- ==============================
-local opponentParagraph = MainTab:CreateParagraph({
-    Title = "Status Opponent",
-    Content = "Menunggu..."
-})
-
-local startLetterParagraph = MainTab:CreateParagraph({
-    Title = "Kata Start",
-    Content = "-"
-})
-
-local lastWordParagraph = MainTab:CreateParagraph({
-    Title = "Kata Terakhir Lawan",
-    Content = "-"
-})
-
--- ==============================
--- UPDATE FUNCTIONS
--- ==============================
-local function updateOpponentStatus()
-    local content = ""
-
-    if matchActive == true then
-        if isMyTurn == true then
-            content = "Giliran Anda"
-        else
-            if opponentStreamWord ~= nil and opponentStreamWord ~= "" then
-                content = "Opponent mengetik: " .. tostring(opponentStreamWord)
-            else
-                content = "Giliran Opponent"
-            end
-        end
-    else
-        content = "Match tidak aktif"
-    end
-
-    local data = {}
-    data.Title = "Status Opponent"
-    data.Content = tostring(content)
-    opponentParagraph.Set(opponentParagraph, data)
+-- Update status function
+local function updateStatusDisplay()
+    pcall(function()
+        statusMatch.Set(statusMatch, {Title = "Match Status", Content = matchActive and "Active" or "Inactive"})
+        statusTurn.Set(statusTurn, {Title = "Turn Status", Content = isMyTurn and "Your Turn" or "Opponent Turn"})
+        statusLetter.Set(statusLetter, {Title = "Start Letter", Content = serverLetter ~= "" and serverLetter or "-"})
+        
+        local words = getSmartWords(serverLetter)
+        statusWords.Set(statusWords, {Title = "Available Words", Content = tostring(#words)})
+    end)
 end
-
-local function updateStartLetter()
-    local content = ""
-
-    if serverLetter ~= nil and serverLetter ~= "" then
-        content = "Kata Start: " .. tostring(serverLetter)
-    else
-        content = "Kata Start: -"
-    end
-
-    local data = {}
-    data.Title = "Kata Start"
-    data.Content = tostring(content)
-    startLetterParagraph.Set(startLetterParagraph, data)
-end
-
-local function updateLastWord()
-    if lastOpponentWord ~= "" then
-        local data = {}
-        data.Title = "Kata Terakhir Lawan"
-        data.Content = lastOpponentWord
-        lastWordParagraph.Set(lastWordParagraph, data)
-    end
-end
-
--- ==============================
--- TAB ABOUT
--- ==============================
-local AboutTab = Window:CreateTab("About")
-
-local about1 = {}
-about1.Title = "Informasi Script"
-about1.Content = "Auto Kata\nVersi: 3.0 (Smart Avoidance)\nby sazaraaax\nFitur: Smart Avoidance System\n- Hindari kata terpakai\n- Hindari kata lawan\n- Auto ganti jawaban"
-AboutTab:CreateParagraph(about1)
-
-local about2 = {}
-about2.Title = "Cara Kerja"
-about2.Content = "> Deteksi real-time kata lawan\n> Tracking semua kata yang muncul\n> Otomatis cari alternatif\n> Smart Retry jika kata habis"
-AboutTab:CreateParagraph(about2)
 
 -- =========================
--- REMOTE EVENTS (DENGAN TRACKING)
+-- REMOTE EVENTS
 -- =========================
-local function onMatchUI(cmd, value)
+MatchUI.OnClientEvent:Connect(function(cmd, value)
+    debugPrint("MatchUI event:", cmd, value or "nil")
+    
     if cmd == "ShowMatchUI" then
         matchActive = true
         isMyTurn = false
-        resetMatchWords()
+        resetUsedWords()
+        debugPrint("Match started")
 
     elseif cmd == "HideMatchUI" then
         matchActive = false
         isMyTurn = false
         serverLetter = ""
-        resetMatchWords()
+        resetUsedWords()
+        debugPrint("Match ended")
 
     elseif cmd == "StartTurn" then
         isMyTurn = true
+        debugPrint("My turn started")
         if autoEnabled then
+            debugPrint("Auto enabled, starting AI...")
             startUltraAI()
+        else
+            debugPrint("Auto disabled")
         end
 
     elseif cmd == "EndTurn" then
         isMyTurn = false
+        debugPrint("My turn ended")
 
     elseif cmd == "UpdateServerLetter" then
         serverLetter = value or ""
+        debugPrint("Server letter updated:", serverLetter)
     end
+    
+    updateStatusDisplay()
+end)
 
-    updateOpponentStatus()
-    updateStartLetter()
-end
-
-local function onBillboard(word)
+BillboardUpdate.OnClientEvent:Connect(function(word)
     if matchActive and not isMyTurn then
         opponentStreamWord = word or ""
-        if word ~= "" then
-            lastOpponentWord = word
-        end
-        updateOpponentStatus()
-        updateLastWord()
+        debugPrint("Opponent typing:", opponentStreamWord)
     end
-end
+end)
 
-local function onUsedWarn(word)
+UsedWordWarn.OnClientEvent:Connect(function(word)
     if word then
-        -- TAMBAHKAN KE TRACKING
-        addMatchWord(word)
-        
-        -- KALO AUTO AKTIF DAN GILIRAN KITA, RESTART DENGAN KATA BARU
+        debugPrint("Used word warning:", word)
+        addUsedWord(word)
         if autoEnabled and matchActive and isMyTurn then
+            debugPrint("Restarting AI with new word")
             humanDelay()
-            startUltraAI() -- Akan cari kata lain otomatis
+            startUltraAI()
         end
     end
-end
+end)
 
-MatchUI.OnClientEvent:Connect(onMatchUI)
-BillboardUpdate.OnClientEvent:Connect(onBillboard)
-UsedWordWarn.OnClientEvent:Connect(onUsedWarn)
+-- Update status periodically
+spawn(function()
+    while true do
+        task.wait(1)
+        updateStatusDisplay()
+    end
+end)
 
-print("ANTI LUAOBFUSCATOR BUILD V3 LOADED - SMART AVOIDANCE ACTIVE")
+debugPrint("SCRIPT FULLY LOADED - CHECK F9 FOR DEBUG OUTPUT")
